@@ -1,0 +1,415 @@
+#include <BluetoothSerial.h>
+#include <Wire.h>
+#include <MPU6050.h>
+#include <TinyGPS++.h>
+
+BluetoothSerial SerialBT;
+MPU6050 mpu;
+TinyGPSPlus gps;
+
+// ================= MOTOR PINS =================
+const int IN1 = 25;
+const int IN2 = 26;
+const int IN3 = 27;
+const int IN4 = 14;
+
+// ================= PWM ENABLE PINS =================
+const int ENA = 19;
+const int ENB = 23;
+
+// ================= JSN PINS =================
+const int trigPin = 5;
+const int echoPin = 18;
+
+// ================= LED PINS =================
+const int LED1 = 32;   // Ultrasonic Alert
+const int LED2 = 33;   // MPU Alert
+
+// =====================================================
+//                THRESHOLDS
+// =====================================================
+
+float distanceThreshold = 40.0;
+
+int ayThreshold = 1950;
+int azThreshold = 18000;
+
+int gxThreshold = 1800;
+int gyThreshold = 1750;
+
+// Ultrasonic timeout
+unsigned long ultrasonicTimeout = 20000;
+
+// =====================================================
+//                MOTOR SPEEDS
+// =====================================================
+
+// Tune according to rover drift
+int leftSpeed = 150;
+int rightSpeed = 110;
+
+// =====================================================
+
+char cmd;
+
+bool roverRunning = false;
+
+bool ultrasonicTriggered = false;
+
+unsigned long ultrasonicTriggerTime = 0;
+
+unsigned long lastSend = 0;
+
+// ================= MOTOR FUNCTIONS =================
+void moveForward() {
+
+  analogWrite(ENA, leftSpeed);
+  analogWrite(ENB, rightSpeed);
+
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+}
+
+void stopMotors() {
+
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
+
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+}
+
+// ================= FILTERED JSN =================
+float getDistance() {
+
+  float total = 0;
+  int validReadings = 0;
+
+  for (int i = 0; i < 5; i++) {
+
+    digitalWrite(trigPin, LOW);
+    delayMicroseconds(5);
+
+    digitalWrite(trigPin, HIGH);
+    delayMicroseconds(20);
+
+    digitalWrite(trigPin, LOW);
+
+    long duration = pulseIn(echoPin, HIGH, 30000);
+
+    if (duration > 0) {
+
+      float d = duration * 0.034 / 2;
+
+      if (d > 2 && d < 400) {
+
+        total += d;
+        validReadings++;
+      }
+    }
+
+    delay(20);
+  }
+
+  if (validReadings == 0) {
+
+    return -1;
+  }
+
+  return total / validReadings;
+}
+
+void setup() {
+
+  Serial.begin(115200);
+
+  // Bluetooth
+  SerialBT.begin("ESP32_ROVER");
+
+  // Motor pins
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  // PWM pins
+  pinMode(ENA, OUTPUT);
+  pinMode(ENB, OUTPUT);
+
+  // JSN pins
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  // LED pins
+  pinMode(LED1, OUTPUT);
+  pinMode(LED2, OUTPUT);
+
+  digitalWrite(LED1, LOW);
+  digitalWrite(LED2, LOW);
+
+  stopMotors();
+
+  // MPU6050
+  Wire.begin(21, 22);
+
+  mpu.initialize();
+
+  if (mpu.testConnection()) {
+
+    SerialBT.println("MPU6050 Connected");
+  }
+  else {
+
+    SerialBT.println("MPU6050 Failed");
+  }
+
+  SerialBT.println("READY");
+}
+
+void loop() {
+
+  // ================= BLUETOOTH =================
+  if (SerialBT.available()) {
+
+    cmd = SerialBT.read();
+
+    // ---------- START ----------
+    if (cmd == 'F') {
+
+      roverRunning = true;
+
+      ultrasonicTriggered = false;
+
+      digitalWrite(LED1, LOW);
+      digitalWrite(LED2, LOW);
+
+      moveForward();
+
+      SerialBT.println("ROVER MOVING");
+    }
+
+    // ---------- STOP ----------
+    if (cmd == 'S') {
+
+      roverRunning = false;
+
+      ultrasonicTriggered = false;
+
+      stopMotors();
+
+      digitalWrite(LED1, LOW);
+      digitalWrite(LED2, LOW);
+
+      SerialBT.println("ROVER STOPPED");
+    }
+  }
+
+  // ================= MAIN RUNNING LOOP =================
+  if (roverRunning) {
+
+    if (millis() - lastSend > 500) {
+
+      lastSend = millis();
+
+      // ================= JSN =================
+      float distance = getDistance();
+
+      if (distance == -1) {
+
+        SerialBT.println("No Echo");
+      }
+      else {
+
+        SerialBT.print("Distance: ");
+        SerialBT.print(distance);
+        SerialBT.println(" cm");
+      }
+
+      // ================= MPU =================
+      int16_t ax, ay, az;
+      int16_t gx, gy, gz;
+
+      mpu.getMotion6(
+        &ax, &ay, &az,
+        &gx, &gy, &gz
+      );
+
+      SerialBT.print("AX:");
+      SerialBT.print(ax);
+
+      SerialBT.print(" AY:");
+      SerialBT.print(ay);
+
+      SerialBT.print(" AZ:");
+      SerialBT.print(az);
+
+      SerialBT.print(" GX:");
+      SerialBT.print(gx);
+
+      SerialBT.print(" GY:");
+      SerialBT.print(gy);
+
+      SerialBT.print(" GZ:");
+      SerialBT.println(gz);
+
+      // =================================================
+      // STAGE 1 : ULTRASONIC DETECTION
+      // =================================================
+
+      if (!ultrasonicTriggered &&
+          distance != -1 &&
+          distance < distanceThreshold) {
+
+        ultrasonicTriggered = true;
+
+        ultrasonicTriggerTime = millis();
+
+        digitalWrite(LED1, HIGH);
+
+        SerialBT.println("ULTRASONIC ALERT");
+      }
+
+      // =================================================
+      // STAGE 2 : MPU CONFIRMATION
+      // =================================================
+
+      if (ultrasonicTriggered) {
+
+        bool ayTriggered = false;
+        bool azTriggered = false;
+
+        bool gxTriggered = false;
+        bool gyTriggered = false;
+
+        // ================= DOMINANT AXES =================
+
+        // AY spike
+        if (abs(ay) > ayThreshold) {
+
+          ayTriggered = true;
+        }
+
+        // AZ spike
+        if (abs(az) > azThreshold) {
+
+          azTriggered = true;
+        }
+
+        // GX spike
+        if (abs(gx) > gxThreshold) {
+
+          gxTriggered = true;
+        }
+
+        // GY spike
+        if (abs(gy) > gyThreshold) {
+
+          gyTriggered = true;
+        }
+
+        // ================= DEBUG =================
+
+        if (ayTriggered) SerialBT.println("AY SPIKE");
+
+        if (azTriggered) SerialBT.println("AZ SPIKE");
+
+        if (gxTriggered) SerialBT.println("GX SPIKE");
+
+        if (gyTriggered) SerialBT.println("GY SPIKE");
+
+        // =================================================
+        // FINAL SENSOR FUSION LOGIC
+        // =================================================
+
+        bool mpuTriggered = false;
+
+        // Require:
+        // ONE accelerometer axis
+        // +
+        // ONE gyroscope axis
+
+        if (
+            (ayTriggered && gxTriggered) ||
+            (ayTriggered && gyTriggered) ||
+            (azTriggered && gxTriggered) ||
+            (azTriggered && gyTriggered)
+           )
+        {
+          mpuTriggered = true;
+        }
+
+        // ================= MPU ALERT =================
+
+        if (mpuTriggered) {
+
+  SerialBT.println("MPU CONDITIONS MET");
+
+  digitalWrite(LED2, HIGH);
+
+  stopMotors();
+
+  roverRunning = false;
+
+  // ================= RANDOM GPS LOCATION =================
+
+  int randomLocation = random(0, 7);
+
+  SerialBT.println("GPS LOCATION:");
+
+  switch(randomLocation) {
+
+    case 0:
+      SerialBT.println("13.032028,77.563673");
+      break;
+
+    case 1:
+      SerialBT.println("13.031940,77.563604");
+      break;
+
+    case 2:
+      SerialBT.println("13.031915,77.563590");
+      break;
+
+    case 3:
+      SerialBT.println("13.031959,77.563374");
+      break;
+
+    case 4:
+      SerialBT.println("13.032008,77.563355");
+      break;
+
+    case 5:
+      SerialBT.println("13.031942,77.563346");
+      break;
+
+    case 6:
+      SerialBT.println("13.031933,77.563478");
+      break;
+  }
+
+  SerialBT.println("ROVER STOPPED");
+}
+        // ================= TIMEOUT =================
+
+        else {
+
+          if (millis() - ultrasonicTriggerTime >
+              ultrasonicTimeout) {
+
+            ultrasonicTriggered = false;
+
+            digitalWrite(LED1, LOW);
+
+            SerialBT.println("ULTRASONIC RESET");
+          }
+        }
+      }
+    }
+  }
+}
