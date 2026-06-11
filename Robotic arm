@@ -1,0 +1,64 @@
+#include <Servo.h>
+
+Servo servo1;
+Servo servo2;
+Servo servo3;
+Servo servo4;
+Servo servo5;
+
+int pot1 = A0;
+int pot2 = A1;
+int pot3 = A2;
+int pot4 = A3;
+int pot5 = A4;
+
+int val1, val2, val3, val4, val5;
+int angle1, angle2, angle3, angle4, angle5;
+
+void setup() {
+  Serial.begin(9600);
+
+  servo1.attach(3);
+  servo2.attach(5);
+  servo3.attach(6);
+  servo4.attach(9);
+  servo5.attach(10);
+}
+
+void loop() {
+
+  // Read potentiometers
+  val1 = analogRead(pot1);
+  val2 = analogRead(pot2);
+  val3 = analogRead(pot3);
+  val4 = analogRead(pot4);
+  val5 = analogRead(pot5);
+
+  // Convert to servo angles
+  angle1 = map(val1,220, 512, 0, 90);
+  angle2 = map(val2, 313, 615, 0, 90);
+  angle3 = map(val3, 315, 677, 0, 90);
+  angle4 = map(val4, 297, 595, 0, 90);
+  angle5 = map(val5, 401, 587, 0, 90);
+
+  // Move servos
+  servo1.write(angle1);
+  servo2.write(angle2);
+  servo3.write(angle3);
+  servo4.write(angle4);
+  servo5.write(angle5);
+
+  // Display analog values
+  Serial.print("A0=");
+  Serial.print(val1);
+  Serial.print("  A1=");
+  Serial.print(val2);
+  Serial.print("  A2=");
+  Serial.print(val3);
+  Serial.print("  A3=");
+  Serial.print(val4);
+  Serial.print("  A4=");
+  Serial.println(val5);
+
+  delay(15);
+}
